@@ -1,6 +1,23 @@
 # Mini-Batch Optimization of Contrastive Loss
+<p align="left">
+    <a href="https://github.com/krafton-ai/mini-batch-cl/blob/master/LICENSE">
+        <img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-green.svg">
+    </a>
+</p>
 
-### Conda Environment Setting
+[Jaewoong Cho](https://sites.google.com/view/jaewoongcho), [Kartik Sreenivasan](https://ksreenivasan.github.io/), [Keon Lee](https://keonlee.notion.site/), Kyunghoo Mun, Soheun Yi, Jeong-Gwan Lee, Anna Lee, [Jy-yong Sohn](https://itml.yonsei.ac.kr/), [Dimitris Papailiopoulos](https://papail.io/), [Kangwook Lee](https://kangwooklee.com/).
+
+Links: [Paper](https://arxiv.org/abs/2307.05906)
+
+![Figure](figure1.png)
+
+## Abstract
+
+>Contrastive learning has gained significant attention as a method for self-supervised learning. The contrastive loss function ensures that embeddings of positive sample pairs (e.g., different samples from the same class or different views of the same object) are similar, while embeddings of negative pairs are dissimilar. Practical constraints such as large memory requirements make it challenging to consider all possible positive and negative pairs, leading to the use of mini-batch optimization.
+In this paper, we investigate the theoretical aspects of mini-batch optimization in contrastive learning. We show that mini-batch optimization is equivalent to full-batch optimization if and only if all $\binom{N}{B}$ mini-batches are selected, while sub-optimality may arise when examining only a subset. We then demonstrate that utilizing high-loss mini-batches can speed up SGD convergence and propose a spectral clustering-based approach for identifying these high-loss mini-batches.
+Our experimental results validate our theoretical findings and demonstrate that our proposed algorithm outperforms vanilla SGD in practically relevant settings, providing a better understanding of mini-batch optimization in contrastive learning.
+
+## Conda Environment Setting
 
 ```bash
 conda env create -f environment.yml
@@ -111,13 +128,13 @@ Please note that the `--world-size` here refers to the number of nodes, not GPUs
 ### Retrieval Tasks
 We provide evaluation code to run two retrieval tasks: on the corrupted dataset, and the original dataset.
 
-**corrupted dataset**
+**Corrupted dataset**
 ```bash
 CUDA_VISIBLE_DEVICES=0 python evaluation.py --ckpt_key cifar100_bz32_sim_all --evaluation corrupted_top1_accuracy --epoch_list 100 --eval_data_name cifar100_c --data_pathname "brightness/1";
 ```
 Please note that `--eval_data_name` should be either `cifar100_c` or `tiny_imagenet_c` for the corruption retrieval task. The corruption name in `--data_pathname` does not need to be changed, as the runner will retrieve all corruptions based on the given directory path. For example, "brightness/1" and "contrast/1" will yield the same results. The only thing you may want to change is the severity number, for example, to five as in "brightness/5".
 
-**original dataset**
+**Original dataset**
 ```bash
 CUDA_VISIBLE_DEVICES=0 python evaluation.py --ckpt_key cifar100_bz32_sim_all --evaluation top1_accuracy --epoch_list 100 --eval_data_name cifar100;
 ```
