@@ -5,7 +5,7 @@
     </a>
 </p>
 
-[Jaewoong Cho](https://sites.google.com/view/jaewoongcho), [Kartik Sreenivasan](https://ksreenivasan.github.io/), [Keon Lee](https://keonlee.notion.site/), Kyunghoo Mun, Soheun Yi, Jeong-Gwan Lee, Anna Lee, [Jy-yong Sohn](https://itml.yonsei.ac.kr/), [Dimitris Papailiopoulos](https://papail.io/), [Kangwook Lee](https://kangwooklee.com/).
+[Jaewoong Cho](https://sites.google.com/view/jaewoongcho), [Kartik Sreenivasan](https://ksreenivasan.github.io/), [Keon Lee](https://keonlee.notion.site/), Kyunghoo Mun, Soheun Yi, [Jeong-Gwan Lee](https://www.linkedin.com/in/jeonggwan-lee-511806102), Anna Lee, [Jy-yong Sohn](https://itml.yonsei.ac.kr/), [Dimitris Papailiopoulos](https://papail.io/), [Kangwook Lee](https://kangwooklee.com/).
 
 Links: [Paper](https://arxiv.org/abs/2307.05906)
 
