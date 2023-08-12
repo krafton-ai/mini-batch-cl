@@ -507,7 +507,9 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # TODO: Data Loadiing for bimodal-setting.
         # TODO: Implement MS-COCO / CC3M dataset loading
-        pass
+        from oc_data import get_data
+        data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=start_epoch)
+        train_dataset = data['train'].dataset
 
     print('batch_sampling: {}'.format(batch_sampling_tag))
     assert args.feature_batch_size % (args.batch_size) == 0, "Due to drop_last=True."
