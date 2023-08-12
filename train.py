@@ -304,9 +304,40 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     set_all_seeds(2022)
     print("=> creating model '{}'".format(args.arch))
-    model = sogclr.builder.SimCLR_ResNet(
-            partial(torchvision_models.__dict__[args.arch], zero_init_residual=True), 
-            args.dim, args.mlp_dim, args.t, loss_type='dcl', N=data_size, num_proj_layers=args.num_proj_layers)
+    BIMODAL = True
+    if not BIMODAL:
+        model = sogclr.builder.SimCLR_ResNet(
+                partial(torchvision_models.__dict__[args.arch], zero_init_residual=True), 
+                args.dim, args.mlp_dim, args.t, loss_type='dcl', N=data_size, num_proj_layers=args.num_proj_layers)
+    else:
+        from open_clip import create_model_and_transforms, trace_model
+        from attrdict import AttrDict
+        # [Reference] https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blob/dev_clif_wandb_exp/src/scripts/clif/221124/run_exp1_80000_2-modal_unfrozen_lr1e8.sh
+        from open_clip_config import open_clip_dict
+        def get_default_params(model_name):
+            # Params from paper (https://arxiv.org/pdf/2103.00020.pdf)
+            model_name = model_name.lower()
+            if "vit" in model_name:
+                return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.98, "eps": 1.0e-6}
+            else:
+                return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.999, "eps": 1.0e-8}
+        default_params = get_default_params(open_clip_dict['model'])
+        open_clip_dict.update(default_params)
+        open_clip_args = AttrDict(open_clip_dict)
+
+        model, preprocess_train, preprocess_val = create_model_and_transforms(
+            open_clip_args.model,
+            open_clip_args.pretrained,
+            precision=open_clip_args.precision,
+            device=open_clip_args.device,
+            jit=open_clip_args.torchscript,
+            frozen=open_clip_args.frozen,
+            proj_type=open_clip_args.proj_type,
+            force_quick_gelu=open_clip_args.force_quick_gelu,
+            pretrained_image=open_clip_args.pretrained_image,
+            image_mean=open_clip_args.image_mean,
+            image_std=open_clip_args.image_std,
+        )
 
     # infer learning rate before changing batch size
     if args.learning_rate_scaling == 'linear':
@@ -351,42 +382,100 @@ def main_worker(gpu, ngpus_per_node, args):
         raise NotImplementedError("Only DistributedDataParallel is supported.")
     #print(model) # print model after SyncBatchNorm
 
-    if args.optimizer == 'lars':
-        optimizer = sogclr.optimizer.LARS(model.parameters(), args.lr,
-                                        weight_decay=args.weight_decay,
-                                        momentum=args.momentum)
-    elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), args.lr,
-                                weight_decay=args.weight_decay)
-    elif args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr,
-                                momentum=0.9, weight_decay=args.weight_decay)
-        
-    scaler = torch.cuda.amp.GradScaler()
+    # create optimizer and scaler
+    if not BIMODAL:
+        if args.optimizer == 'lars':
+            optimizer = sogclr.optimizer.LARS(model.parameters(), args.lr,
+                                            weight_decay=args.weight_decay,
+                                            momentum=args.momentum)
+        elif args.optimizer == 'adamw':
+            optimizer = torch.optim.AdamW(model.parameters(), args.lr,
+                                    weight_decay=args.weight_decay)
+        elif args.optimizer == 'sgd':
+            optimizer = torch.optim.SGD(model.parameters(), lr=args.lr,
+                                    momentum=0.9, weight_decay=args.weight_decay)
+
+        scaler = torch.cuda.amp.GradScaler()
+    else:
+        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L177
+        # to
+        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L204
+        optimizer = None
+        scaler = None
+        exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
+        include = lambda n, p: not exclude(n, p)
+
+        named_parameters = list(model.named_parameters())
+        gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
+        rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
+
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": gain_or_bias_params, "weight_decay": 0.},
+                {"params": rest_params, "weight_decay": open_clip_args.wd},
+            ],
+            lr=open_clip_args.lr,
+            betas=(open_clip_args.beta1, open_clip_args.beta2),
+            eps=open_clip_args.eps,
+        )
+        if open_clip_args.horovod:
+            optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
+            hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+            hvd.broadcast_optimizer_state(optimizer, root_rank=0)
+
+        scaler = GradScaler() if args.precision == "amp" else None
 
     # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            if args.gpu is None:
-                checkpoint = torch.load(args.resume)
+    if not BIMODAL:
+        if args.resume:
+            if os.path.isfile(args.resume):
+                print("=> loading checkpoint '{}'".format(args.resume))
+                if args.gpu is None:
+                    checkpoint = torch.load(args.resume)
+                else:
+                    # Map model to be loaded to specified single gpu.
+                    loc = 'cuda:{}'.format(args.gpu)
+                    checkpoint = torch.load(args.resume, map_location=loc)
+                args.start_epoch = checkpoint['epoch']
+                model.load_state_dict(checkpoint['state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                scaler.load_state_dict(checkpoint['scaler'])
+                model.module.u = checkpoint['u'].cpu()
+                print('check sum u:', model.module.u.sum())
+                print("=> loaded checkpoint '{}' (epoch {})"
+                    .format(args.resume, checkpoint['epoch']))
             else:
-                # Map model to be loaded to specified single gpu.
-                loc = 'cuda:{}'.format(args.gpu)
-                checkpoint = torch.load(args.resume, map_location=loc)
-            args.start_epoch = checkpoint['epoch']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scaler.load_state_dict(checkpoint['scaler'])
-            model.module.u = checkpoint['u'].cpu()
-            print('check sum u:', model.module.u.sum())
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+                print("=> no checkpoint found at '{}'".format(args.resume))
+    else:
+        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blob/dev_clif_wandb_exp/src/training/main.py#L206
+        # to
+        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L228
+        # optionally resume from a checkpoint
+        start_epoch = 0
+        if args.resume is not None:
+            if os.path.isfile(args.resume):
+                checkpoint = torch.load(args.resume, map_location='cpu')
+                if 'epoch' in checkpoint:
+                    # resuming a train checkpoint w/ epoch and optimizer state
+                    start_epoch = checkpoint["epoch"]
+                    sd = checkpoint["state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    model.load_state_dict(sd)
+                    if optimizer is not None:
+                        optimizer.load_state_dict(checkpoint["optimizer"])
+                    if scaler is not None and 'scaler' in checkpoint:
+                        scaler.load_state_dict(checkpoint['scaler'])
+                    logging.info(f"=> resuming checkpoint '{args.resume}' (epoch {start_epoch})")
+                else:
+                    # loading a bare (model only) checkpoint for fine-tune or evaluation
+                    model.load_state_dict(checkpoint)
+                    logging.info(f"=> loaded checkpoint '{args.resume}' (epoch {start_epoch})")
+            else:
+                logging.info("=> no checkpoint found at '{}'".format(args.resume))
 
     cudnn.benchmark = True
-    
+
 
     # Data loading code
     # for cifar-, refer to https://gist.github.com/weiaicunzai/e623931921efefd4c331622c344d8151?permalink_comment_id=2851662#gistcomment-2851662
