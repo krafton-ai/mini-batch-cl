@@ -217,7 +217,38 @@ class SimCLR_ResNet(SimCLR):
         # projectors
         # TODO: increase number of mlp layers 
         self.base_encoder.fc = self._build_mlp(num_proj_layers, hidden_dim, mlp_dim, dim)
-       
+
+
+class SimCLR_CLIP(SimCLR):
+    def __init__(self, open_clip_args, device=None):
+        super(SimCLR, self).__init__()
+
+        from open_clip import create_model_and_transforms, trace_model
+
+        model, preprocess_train, preprocess_val = create_model_and_transforms(
+            open_clip_args.model,
+            open_clip_args.pretrained,
+            precision=open_clip_args.precision,
+            device=open_clip_args.device,
+            jit=open_clip_args.torchscript,
+            frozen=open_clip_args.frozen,
+            proj_type=open_clip_args.proj_type,
+            force_quick_gelu=open_clip_args.force_quick_gelu,
+            pretrained_image=open_clip_args.pretrained_image,
+            image_mean=open_clip_args.image_mean,
+            image_std=open_clip_args.image_std,
+        )
+        self.base_encoder = model
+        self.preprocess_train = preprocess_train
+        self.preprocess_val = preprocess_val
+
+        # sogclr 
+        if not device:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = device 
+
+    # def get_features(self, x1, x2):
 
 
 # utils

@@ -325,19 +325,7 @@ def main_worker(gpu, ngpus_per_node, args):
         open_clip_dict.update(default_params)
         open_clip_args = AttrDict(open_clip_dict)
 
-        model, preprocess_train, preprocess_val = create_model_and_transforms(
-            open_clip_args.model,
-            open_clip_args.pretrained,
-            precision=open_clip_args.precision,
-            device=open_clip_args.device,
-            jit=open_clip_args.torchscript,
-            frozen=open_clip_args.frozen,
-            proj_type=open_clip_args.proj_type,
-            force_quick_gelu=open_clip_args.force_quick_gelu,
-            pretrained_image=open_clip_args.pretrained_image,
-            image_mean=open_clip_args.image_mean,
-            image_std=open_clip_args.image_std,
-        )
+        model = sogclr.builder.SimCLR_CLIP(open_clip_args, args.t)
 
     # infer learning rate before changing batch size
     if args.learning_rate_scaling == 'linear':
@@ -380,6 +368,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # AllGather/rank implementation in this code only supports DistributedDataParallel.
         raise NotImplementedError("Only DistributedDataParallel is supported.")
+        # pass
     #print(model) # print model after SyncBatchNorm
 
     # create optimizer and scaler
@@ -423,7 +412,8 @@ def main_worker(gpu, ngpus_per_node, args):
             hvd.broadcast_parameters(model.state_dict(), root_rank=0)
             hvd.broadcast_optimizer_state(optimizer, root_rank=0)
 
-        scaler = GradScaler() if args.precision == "amp" else None
+        from torch.cuda.amp import GradScaler
+        scaler = GradScaler() if open_clip_args.precision == "amp" else None
 
     # optionally resume from a checkpoint
     if not BIMODAL:
@@ -451,6 +441,7 @@ def main_worker(gpu, ngpus_per_node, args):
         # to
         # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L228
         # optionally resume from a checkpoint
+        import logging
         start_epoch = 0
         if args.resume is not None:
             if os.path.isfile(args.resume):
@@ -476,42 +467,47 @@ def main_worker(gpu, ngpus_per_node, args):
 
     cudnn.benchmark = True
 
+    # TODO: Data Loadiing for bimodal-setting.
+    if not BIMODAL:
+        # Data loading code
+        # for cifar-, refer to https://gist.github.com/weiaicunzai/e623931921efefd4c331622c344d8151?permalink_comment_id=2851662#gistcomment-2851662
+        mean = {'tiny_imagenet': [0.485, 0.456, 0.406],
+                'cifar100': [0.5071, 0.4865, 0.4409],
+                }[args.data_name]
+        std = {'tiny_imagenet': [0.229, 0.224, 0.225],
+                'cifar100': [0.2673, 0.2564, 0.2762],
+                }[args.data_name]
 
-    # Data loading code
-    # for cifar-, refer to https://gist.github.com/weiaicunzai/e623931921efefd4c331622c344d8151?permalink_comment_id=2851662#gistcomment-2851662
-    mean = {'tiny_imagenet': [0.485, 0.456, 0.406],
-            'cifar100': [0.5071, 0.4865, 0.4409],
-            }[args.data_name]
-    std = {'tiny_imagenet': [0.229, 0.224, 0.225],
-            'cifar100': [0.2673, 0.2564, 0.2762],
-            }[args.data_name]
+        image_size = {'tiny_imagenet':224, 'cifar100':224}[args.data_name]
+        normalize = transforms.Normalize(mean=mean, std=std)
 
-    image_size = {'tiny_imagenet':224, 'cifar100':224}[args.data_name]
-    normalize = transforms.Normalize(mean=mean, std=std)
+        # follow BYOL's augmentation recipe: https://arxiv.org/abs/2006.07733
+        # simclr
+        augmentation1 = [
+            transforms.RandomResizedCrop(image_size, scale=(args.crop_min, 1.)),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.2, 0.1)  # not strengthened
+            ], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([sogclr.loader.GaussianBlur([.1, 2.])], p=1.0),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize
+        ]
 
-    # follow BYOL's augmentation recipe: https://arxiv.org/abs/2006.07733
-    # simclr
-    augmentation1 = [
-        transforms.RandomResizedCrop(image_size, scale=(args.crop_min, 1.)),
-        transforms.RandomApply([
-            transforms.ColorJitter(0.4, 0.4, 0.2, 0.1)  # not strengthened
-        ], p=0.8),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.RandomApply([sogclr.loader.GaussianBlur([.1, 2.])], p=1.0),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize
-    ]
-
-    if args.data_name in ['tiny_imagenet', 'cifar100'] :
-        traindir = os.path.join(args.data, 'train')
-        train_dataset = sogclr.folder.ImageFolder(
-            traindir,
-            sogclr.loader.TwoCropsTransform(transforms.Compose(augmentation1), 
-                                            transforms.Compose(augmentation1)),
-                                            max_dataset_size=args.max_dataset_size)
+        if args.data_name in ['tiny_imagenet', 'cifar100'] :
+            traindir = os.path.join(args.data, 'train')
+            train_dataset = sogclr.folder.ImageFolder(
+                traindir,
+                sogclr.loader.TwoCropsTransform(transforms.Compose(augmentation1), 
+                                                transforms.Compose(augmentation1)),
+                                                max_dataset_size=args.max_dataset_size)
+        else:
+            raise ValueError
     else:
-        raise ValueError
+        # TODO: Data Loadiing for bimodal-setting.
+        # TODO: Implement MS-COCO / CC3M dataset loading
+        pass
 
     print('batch_sampling: {}'.format(batch_sampling_tag))
     assert args.feature_batch_size % (args.batch_size) == 0, "Due to drop_last=True."
