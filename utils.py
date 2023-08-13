@@ -63,6 +63,7 @@ def get_learned_features(feature_loader, model, global_step, args, full_extracti
     a_idx = a_z_i = a_z_j = None
     assert args.world_size > 0
     kb_size = len(feature_loader) * args.feature_batch_size
+    # print(f"[get_learned_features] kb_size: {kb_size}, len(feature_loader): {len(feature_loader)}, args.feature_batch_size: {args.feature_batch_size}")
     if args.distributed:
         # should call the set_epoch() method at the beginning of each global_step (for OSGD family)
         feature_loader.sampler.set_epoch(global_step)
@@ -269,11 +270,12 @@ def sc_even_kb_loose(features, batch_selection, k, args, tqdm_desc=True):
     d = u.shape[-1]
     B = args.global_batch_size
     N = (idxs.shape[0]//(k*B))*(k*B)
+    # print(f"[sc_even_kb_loose] idxs.shape {idxs.shape[0]}  B: {B}, N: {N}, k*B: {k*B}")
 
     # Reshape stacked features to (-1, batch_size) features
     idxs, u_, v_ = idxs[:N].reshape((N//(k*B), k, B)), u[:N].reshape((N//(k*B), k, B, d)), v[:N].reshape((N//(k*B), k, B, d)) 
-    print("u_: ", u_[:3])
-    print("v_: ", v_[:3])
+    #print("u_: ", u_[:3, :5])
+    #print("v_: ", v_[:3, :5])
     # Get k batches and their loss
     batch_idxs = []
     # end = time.time()
@@ -345,6 +347,34 @@ def osgd_kb_loose(criterion, features, k, q, args):
     return batch_idxs
 
 
+def osgd_kb_loose_bimodal(criterion, features, k, q, args):
+    idxs, u, v = features
+    d = u.shape[-1]
+    B = args.global_batch_size
+    N = (idxs.shape[0]//(k*B))*(k*B)
+
+    # Reshape stacked features to (-1, batch_size) features
+    idxs, u_, v_ = idxs[:N].reshape((N//(k*B), k, B)), u[:N].reshape((N//(k*B), k, B, d)), v[:N].reshape((N//(k*B), k, B, d)) 
+    # Get k batches and their loss
+    batch_idxs = []
+    # end = time.time()
+    for _, (k_idxs, k_u, k_v) in enumerate(tqdm(zip(idxs, u_, v_), desc=f'rank[{args.rank}] | osgd (kb-loose)', total=N//(k*B))):  # [N//(k*B)]
+        batch_idxs_temp,losses = [], []
+        for b_idx, (idx, u_temp, v_temp) in enumerate(zip(k_idxs, k_u, k_v)):  # [k, B, dim]
+            batch_idxs_temp.append(idx)
+            loss = criterion(u_temp, v_temp, logit_scale=1, target_values=None)
+            losses.append(loss.item())
+        # Get top-q batches from losses
+        if args.best_criteria == "min":
+            topk_idxs = np.argsort(np.array(losses))[:q]
+        else:
+            topk_idxs = np.argsort(np.array(losses))[-q:]
+        batch_idxs_temp = torch.stack(batch_idxs_temp, dim=0)
+        batch_idxs_temp = batch_idxs_temp[topk_idxs].tolist()
+        batch_idxs += batch_idxs_temp
+        # end = time.time()
+    return batch_idxs
+
 def random_naive(total_dataset_size, batch_size, target_batch_num, args):
     assert total_dataset_size % batch_size == 0, "Check drop last option."
     batch_index_list = np.arange(total_dataset_size)
@@ -366,7 +396,10 @@ def customize_train_loader(model, preemptive_loader, feature_loader, target_batc
     with torch.no_grad():
         if args.rank == 0:
             if batch_sampling in ["osgd_kb_loose"]:
-                batch_index_list = osgd_kb_loose(unwrap_model(model).simclr_criteria, features, args.k, args.q, args)
+                if args.bimodal:
+                    batch_index_list = osgd_kb_loose_bimodal(unwrap_model(model).infonce_loss, features, args.k, args.q, args)
+                else:
+                    batch_index_list = osgd_kb_loose(unwrap_model(model).simclr_criteria, features, args.k, args.q, args)
             elif batch_sampling in ["sc_even_kb_loose"]:
                 batch_index_list = sc_even_kb_loose(features, batch_sampling, args.k, args)
             else:
@@ -404,7 +437,8 @@ def sample_loader(preemptive_loader, feature_loader, model, epoch, step, args, f
     # calculate iters_per_sampling
     iters_per_sampling = len(feature_loader) * (args.feature_batch_size // args.batch_size)
     if batch_sampling in ["osgd_kb_loose", "sc_even_kb_loose"]:
-        assert iters_per_sampling >= args.k
+        assert iters_per_sampling >= args.k, f"iters_per_sampling : {iters_per_sampling}, args.k : {args.k} / len(feature_loader) : {len(feature_loader)} / " + \
+            f"args.feature_batch_size : {args.feature_batch_size} / args.batch_size : {args.batch_size}"
         iters_per_sampling = len(preemptive_loader.dataset) // (args.k * args.global_batch_size) * args.q
 
     train_loader, batch_sample_time = customize_train_loader(

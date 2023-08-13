@@ -173,6 +173,9 @@ def get_parser(description='Mini-Batch Contrastive Loss Pre-Training'):
                         help='HCL\' tau plus (class-prior)')
     parser.add_argument('--hcl_beta', default=None, type=float,
                         help='HCL\' beta')
+
+    parser.add_argument('--bimodal', action='store_true')
+
     return parser
 
 
@@ -269,7 +272,7 @@ def main_worker(gpu, ngpus_per_node, args):
             batch_sampling_tag += f"_ssr{args.search_subset_ratio}"
         else:
             batch_sampling_tag += f"_k{args.k}_q{args.q}"
-    group_tag = '%s_%s_bz_%s_accum%s_E%s_lr_%.3f_%s_%s_%s_%s'\
+    group_tag = '%s_%s_bz_%s_accum%s_E%s_lr_%.7f_%s_%s_%s_%s'\
         %(args.data_name, args.arch, args.batch_size, args.accum_steps, args.epochs, args.lr, args.learning_rate_scaling, args.optimizer, objective_tag, batch_sampling_tag)
     if args.max_dataset_size:
         group_tag += f"_mds{args.max_dataset_size}"
@@ -357,6 +360,9 @@ def main_worker(gpu, ngpus_per_node, args):
             args.batch_size = int(args.batch_size / args.world_size)
             args.global_batch_size = args.batch_size * args.world_size
             args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
+            open_clip_args.batch_size = args.batch_size
+            open_clip_args.global_batch_size = args.global_batch_size
+            open_clip_args.workers = args.workers
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         else:
             model.cuda()
@@ -553,6 +559,7 @@ def main_worker(gpu, ngpus_per_node, args):
     epoch = args.start_epoch
     step = iters_per_epoch * epoch
     avg_meters = _get_average_meters(iters_per_epoch, epoch)
+    # print(f"iters_per_epoch {iters_per_epoch}, len(preemptive_loader): {len(preemptive_loader)}")
     while epoch <= args.epochs:
 
         # train for one epoch
@@ -646,6 +653,7 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
             step += 1
 
             if step % args.print_freq == 0:
+                # print(f"step : {step}, iters_per_epoch * epoch: {iters_per_epoch * epoch}, step - iters_per_epoch * epoch : {step - iters_per_epoch * epoch}")
                 progress.display(step - iters_per_epoch * epoch)
                 print(f"update! at i={i + 1}")
 
@@ -659,7 +667,7 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        
+
     return step
 
 
