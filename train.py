@@ -297,8 +297,11 @@ def main_worker(gpu, ngpus_per_node, args):
         data_size = 100000+1
     elif args.data_name == "cifar100":
         data_size = 50000+1
+    elif args.data_name == "mscoco":
+        data_size = 118287+1
+    # elif args.data_name == "cc3m":
     else:
-        data_size = 1000000 
+        data_size = 10000
     print ('pretraining on %s'%args.data_name)
 
     # create model
@@ -325,7 +328,7 @@ def main_worker(gpu, ngpus_per_node, args):
         open_clip_dict.update(default_params)
         open_clip_args = AttrDict(open_clip_dict)
 
-        model = sogclr.builder.SimCLR_CLIP(open_clip_args, args.t)
+        model = sogclr.builder.SimCLR_CLIP(args, open_clip_args, N=data_size)
 
     # infer learning rate before changing batch size
     if args.learning_rate_scaling == 'linear':
@@ -399,9 +402,9 @@ def main_worker(gpu, ngpus_per_node, args):
         optimizer = torch.optim.AdamW(
             [
                 {"params": gain_or_bias_params, "weight_decay": 0.},
-                {"params": rest_params, "weight_decay": open_clip_args.wd},
+                {"params": rest_params, "weight_decay": args.weight_decay},
             ],
-            lr=open_clip_args.lr,
+            lr=args.lr,
             betas=(open_clip_args.beta1, open_clip_args.beta2),
             eps=open_clip_args.eps,
         )
@@ -656,7 +659,7 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-
+        
     return step
 
 

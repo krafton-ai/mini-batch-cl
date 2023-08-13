@@ -220,7 +220,7 @@ class SimCLR_ResNet(SimCLR):
 
 
 class SimCLR_CLIP(SimCLR):
-    def __init__(self, open_clip_args, device=None):
+    def __init__(self, args, open_clip_args, N=50000, device=None):
         super(SimCLR, self).__init__()
 
         from open_clip import create_model_and_transforms, trace_model
@@ -229,7 +229,7 @@ class SimCLR_CLIP(SimCLR):
             open_clip_args.model,
             open_clip_args.pretrained,
             precision=open_clip_args.precision,
-            device=open_clip_args.device,
+            device=args.device, #open_clip_args.device,
             jit=open_clip_args.torchscript,
             frozen=open_clip_args.frozen,
             proj_type=open_clip_args.proj_type,
@@ -241,7 +241,8 @@ class SimCLR_CLIP(SimCLR):
         self.base_encoder = model
         self.preprocess_train = preprocess_train
         self.preprocess_val = preprocess_val
-
+        self.u = torch.zeros(N).reshape(-1, 1) #.to(self.device) 
+        
         from oc_loss import ClipInfonceLoss
         self.infonce_loss = ClipInfonceLoss(
             local_loss=open_clip_args.local_loss,
