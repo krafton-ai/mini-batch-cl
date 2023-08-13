@@ -17,12 +17,12 @@ open_clip_dict = {
     ###################################
     # about learning
     ###################################
-    "wd": 0.1,
-    "warmup": 200,
-    "lr": 3e-3,
-    "epochs": 30,
+    # "wd": 0.1,
+    # "warmup": 200,  # This is not used. (We use ArgParse warmup-epochs)
+    # "lr": 5e-3,     # It is not used.   (We use ArgParse lr)
+    # "epochs": 30,   # This is not used.  
     "horovod": False,
-    "batch_size": 200,
+    # "batch_size": 200,  # This is not used.
     "workers": 8,
     ##################################
     # about data
@@ -34,16 +34,15 @@ open_clip_dict = {
     "csv_separator": "|",
     "dataset_type": "auto",
     "max_dataset_size": 5000,
-    "distributed": True,
+    "distributed": False,
     "fixed_batch": False,
     ###################################
     # Infonce Loss
     ###################################
     "local_loss": False,
-    "gather_with_grad": False,            
+    "gather_with_grad": False,
     "rank": 0,
     "world_size": 1,
     "horovod": False,
     "bigbatch": True
-
 }
