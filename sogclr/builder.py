@@ -224,12 +224,11 @@ class SimCLR_CLIP(SimCLR):
         super(SimCLR, self).__init__()
 
         from open_clip import create_model_and_transforms, trace_model
-
         model, preprocess_train, preprocess_val = create_model_and_transforms(
             open_clip_args.model,
             open_clip_args.pretrained,
             precision=open_clip_args.precision,
-            device=args.device, #open_clip_args.device,
+            device=args.gpu,  
             jit=open_clip_args.torchscript,
             frozen=open_clip_args.frozen,
             proj_type=open_clip_args.proj_type,
