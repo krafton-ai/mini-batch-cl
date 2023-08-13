@@ -67,7 +67,7 @@ class SimCLR(nn.Module):
 
         return nn.Sequential(*mlp)
 
-    def dynamic_contrastive_loss(self, hidden1, hidden2, index=None, gamma=0.9, distributed=True):
+    def  dynamic_contrastive_loss(self, hidden1, hidden2, index=None, gamma=0.9, distributed=True):
         # Get (normalized) hidden1 and hidden2.
         hidden1, hidden2 = F.normalize(hidden1, p=2, dim=1), F.normalize(hidden2, p=2, dim=1)
         batch_size = hidden1.shape[0]
@@ -242,14 +242,54 @@ class SimCLR_CLIP(SimCLR):
         self.preprocess_train = preprocess_train
         self.preprocess_val = preprocess_val
 
+        from oc_loss import ClipInfonceLoss
+        self.infonce_loss = ClipInfonceLoss(
+            local_loss=open_clip_args.local_loss,
+            gather_with_grad=open_clip_args.gather_with_grad,
+            cache_labels=True,
+            rank=open_clip_args.rank,
+            world_size=open_clip_args.world_size,
+            use_horovod=open_clip_args.horovod,
+            bigbatch=open_clip_args.bigbatch)
+
         # sogclr 
         if not device:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = device 
 
-    # def get_features(self, x1, x2):
+    def forward(self, x1, x2, index, gamma, args, wo_loss=False):
+        """
+        Input:
+            x1: images
+            x2: texts
+            index: index of image
+            gamma: moving average of sogclr 
+        Output:
+            loss
+        """
+        # compute features
+        h1, h2, exp_logit = self.get_features(x1, x2)
+        if wo_loss:
+            return h1, h2
+        if args.objective_type == 'sim':
+            loss = self.infonce_loss(h1, h2, exp_logit, None)  # 4th arg didn't use.
+            print("loss: ", loss)
+        elif args.objective_type == 'sog':
+            raise NotImplemented
+            loss = self.dynamic_contrastive_loss(h1, h2, index, gamma)
+        elif args.objective_type == 'hcl':
+            raise NotImplemented
+            loss = self.hcl_loss(h1, h2, temperature=args.t, batch_size=args.batch_size,
+                                 tau_plus=args.hcl_tau_plus, beta=args.hcl_beta, estimator='hard')
+        else:
+            raise NotImplemented
 
+        return loss
+
+    def get_features(self, x1, x2):
+        h1, h2, exp_logit = self.base_encoder(x1, x2)
+        return h1, h2, exp_logit
 
 # utils
 @torch.no_grad()
