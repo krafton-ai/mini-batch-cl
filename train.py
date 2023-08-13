@@ -386,9 +386,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         scaler = torch.cuda.amp.GradScaler()
     else:
-        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L177
-        # to
-        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L204
+        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L177 ~ #L204
         optimizer = None
         scaler = None
         exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
@@ -437,9 +435,7 @@ def main_worker(gpu, ngpus_per_node, args):
             else:
                 print("=> no checkpoint found at '{}'".format(args.resume))
     else:
-        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blob/dev_clif_wandb_exp/src/training/main.py#L206
-        # to
-        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blame/dev_clif_wandb_exp/src/training/main.py#L228
+        # https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blob/dev_clif_wandb_exp/src/training/main.py#L206 ~ #L228
         # optionally resume from a checkpoint
         import logging
         start_epoch = 0
@@ -508,7 +504,10 @@ def main_worker(gpu, ngpus_per_node, args):
         # TODO: Data Loadiing for bimodal-setting.
         # TODO: Implement MS-COCO / CC3M dataset loading
         from oc_data import get_data
-        data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=start_epoch)
+        if hasattr(model, 'module'):
+            data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=start_epoch)
+        else:
+            data = get_data(open_clip_args, (model.preprocess_train, model.preprocess_val), epoch=start_epoch)
         train_dataset = data['train'].dataset
 
     print('batch_sampling: {}'.format(batch_sampling_tag))
@@ -603,7 +602,7 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
     optimizer.zero_grad()
 
     for i, (images, _, index) in enumerate(train_loader):
-
+        
         # measure data loading time
         data_time.update(time.time() - end)
 
