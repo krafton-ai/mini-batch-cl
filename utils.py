@@ -68,6 +68,8 @@ def get_learned_features(feature_loader, model, global_step, args, full_extracti
         feature_loader.sampler.set_epoch(global_step)
     with torch.no_grad():
         for step, ((x_i, x_j), _, idx) in enumerate(tqdm(feature_loader, desc=f'rank[{args.rank}] | feature extraction')):
+            # print("x_i: ", x_i[:3, :5])
+            # print("x_j: ", x_j[:3, :5])
             x_i = x_i.cuda(args.gpu, non_blocking=True)
             x_j = x_j.cuda(args.gpu, non_blocking=True)
 
@@ -270,6 +272,8 @@ def sc_even_kb_loose(features, batch_selection, k, args, tqdm_desc=True):
 
     # Reshape stacked features to (-1, batch_size) features
     idxs, u_, v_ = idxs[:N].reshape((N//(k*B), k, B)), u[:N].reshape((N//(k*B), k, B, d)), v[:N].reshape((N//(k*B), k, B, d)) 
+    print("u_: ", u_[:3])
+    print("v_: ", v_[:3])
     # Get k batches and their loss
     batch_idxs = []
     # end = time.time()
@@ -296,12 +300,15 @@ def sc_naive(features, batch_selection, batch_size, args, tqdm_desc=True):
     a_idx = features[0]
     a_z_i = F.normalize(features[1], p=2, dim=1) / np.sqrt(args.t)
     a_z_j = F.normalize(features[2], p=2, dim=1) / np.sqrt(args.t)
+    #print("a_z_i : ", a_z_i[:3, :5])
+    #print("a_z_j : ", a_z_j[:3, :5])
 
     assert len(a_idx) % batch_size == 0
     n_clusters = len(a_idx) // batch_size
 
     sc = CustomSpectralClustering(n_clusters, batch_selection, batch_size, affinity='precomputed', eigen_solver='arpack')
     affinity = custom_affinity(a_z_i.cpu().detach().numpy(), a_z_j.cpu().detach().numpy(), batch_size)
+    #print("psd_affinity not exp : ", affinity[:5, :5])
     psd_affinity = np.exp(affinity)
     y_pred = sc.fit_predict(psd_affinity)
 
