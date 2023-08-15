@@ -19,11 +19,11 @@ open_clip_dict = {
     ###################################
     # "wd": 0.1,
     # "warmup": 200,  # This is not used. (We use ArgParse warmup-epochs)
-    # "lr": 5e-3,     # It is not used.   (We use ArgParse lr)
+    # "lr": 5e-3,     # This is not used.   (We use ArgParse lr)
     # "epochs": 30,   # This is not used.  
     "horovod": False,
     # "batch_size": 200,  # This is not used.
-    "workers": 8,
+    # "workers": 8,   # This is not used.
     ##################################
     # about data
     ##################################
@@ -33,7 +33,7 @@ open_clip_dict = {
     "csv_caption_key": "caption",
     "csv_separator": "|",
     "dataset_type": "auto",
-    "max_dataset_size": 5000,
+    "max_dataset_size": None,
     "distributed": False,
     "fixed_batch": False,
     ###################################

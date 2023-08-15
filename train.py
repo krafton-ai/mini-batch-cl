@@ -518,6 +518,7 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             data = get_data(open_clip_args, (model.preprocess_train, model.preprocess_val), epoch=start_epoch)
         train_dataset = data['train'].dataset
+        print(f"len(train_dataset) : {len(train_dataset)}")
 
     print('batch_sampling: {}'.format(batch_sampling_tag))
     assert args.feature_batch_size % (args.batch_size) == 0, "Due to drop_last=True."
