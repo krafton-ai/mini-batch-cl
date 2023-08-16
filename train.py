@@ -272,7 +272,7 @@ def main_worker(gpu, ngpus_per_node, args):
             batch_sampling_tag += f"_ssr{args.search_subset_ratio}"
         else:
             batch_sampling_tag += f"_k{args.k}_q{args.q}"
-    group_tag = '%s_%s_bz_%s_accum%s_E%s_lr_%.7f_%s_%s_%s_%s'\
+    group_tag = '230815_%s_%s_bz_%s_accum%s_E%s_lr_%.7f_%s_%s_%s_%s'\
         %(args.data_name, args.arch, args.batch_size, args.accum_steps, args.epochs, args.lr, args.learning_rate_scaling, args.optimizer, objective_tag, batch_sampling_tag)
     if args.max_dataset_size:
         group_tag += f"_mds{args.max_dataset_size}"
@@ -310,7 +310,8 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     set_all_seeds(2022)
     print("=> creating model '{}'".format(args.arch))
-    BIMODAL = True
+    BIMODAL = args.bimodal
+    print(f"Bimodal : {BIMODAL}")
     if not BIMODAL:
         model = sogclr.builder.SimCLR_ResNet(
                 partial(torchvision_models.__dict__[args.arch], zero_init_residual=True), 
@@ -360,9 +361,10 @@ def main_worker(gpu, ngpus_per_node, args):
             args.batch_size = int(args.batch_size / args.world_size)
             args.global_batch_size = args.batch_size * args.world_size
             args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-            open_clip_args.batch_size = args.batch_size
-            open_clip_args.global_batch_size = args.global_batch_size
-            open_clip_args.workers = args.workers
+            if args.bimodal:
+                open_clip_args.batch_size = args.batch_size
+                open_clip_args.global_batch_size = args.global_batch_size
+                open_clip_args.workers = args.workers
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         else:
             model.cuda()
