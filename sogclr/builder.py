@@ -274,7 +274,6 @@ class SimCLR_CLIP(SimCLR):
             return h1, h2
         if args.objective_type == 'sim':
             loss = self.infonce_loss(h1, h2, exp_logit, None)  # 4th arg didn't use.
-            print("loss: ", loss)
         elif args.objective_type == 'sog':
             raise NotImplemented
             loss = self.dynamic_contrastive_loss(h1, h2, index, gamma)
