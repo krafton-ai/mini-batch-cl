@@ -420,7 +420,7 @@ def evaluation(ckpt_path, epoch, global_args):
     if not global_args.bimodal:
         train_dataset = get_train_dataset(args, global_args)
     else:
-        from oc_data import get_data
+        from oc_utils.oc_data import get_data
         if hasattr(model, 'module'):
             data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=-1)
         else:
