@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import hashlib
-from oc_utils.utils.custom_loss.sup_con_loss import SupConLoss
+from open_clip.oc_utils.utils.custom_loss.sup_con_loss import SupConLoss
 
 try:
     import torch.distributed.nn

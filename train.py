@@ -523,7 +523,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # TODO: Data Loadiing for bimodal-setting.
         # TODO: Implement MS-COCO / CC3M dataset loading
-        from oc_utils.oc_data import get_data
+        from open_clip.oc_utils.oc_data import get_data
         if hasattr(model, 'module'):
             data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=start_epoch)
         else:

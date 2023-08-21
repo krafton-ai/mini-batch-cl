@@ -242,7 +242,7 @@ class SimCLR_CLIP(SimCLR):
         self.preprocess_val = preprocess_val
         self.u = torch.zeros(N).reshape(-1, 1) #.to(self.device) 
         
-        from oc_utils.oc_loss import ClipInfonceLoss
+        from open_clip.oc_utils.oc_loss import ClipInfonceLoss
         self.infonce_loss = ClipInfonceLoss(
             local_loss=open_clip_args.local_loss,
             gather_with_grad=open_clip_args.gather_with_grad,
