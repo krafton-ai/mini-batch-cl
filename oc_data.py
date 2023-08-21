@@ -76,7 +76,7 @@ class CsvDataset(Dataset):
             targets = self.targets[idx]
         else:
             targets = str(self.captions[idx])
-        return (images, texts), targets, idx #image_path
+        return (images, texts), image_path, idx #image_path
 
 
 class SharedEpoch:
@@ -485,8 +485,10 @@ def get_data(args, preprocess_fns, epoch=0, max_val_size=150000):
             assert args.class_metrics, f"Please set --class_metrics for classification dataset: {args.val_data}"
         data["val"] = get_dataset_fn(args.val_data, args.dataset_type)(
             args, preprocess_val, args.val_data, is_train=False, max_size=max_val_size)
-        data["val_on_train"] = get_dataset_fn(args.train_data, args.dataset_type)(
-            args, preprocess_train, args.train_data, is_train=False, epoch=epoch, max_size=data["val"].dataloader.num_samples)
+            
+    if args.val_on_train_data:    
+        data["val_on_train"] = get_dataset_fn(args.val_on_train_data, args.dataset_type)(
+            args, preprocess_train, args.val_on_train_data, is_train=False, epoch=epoch, max_size=data["val"].dataloader.num_samples)
 
     # if args.imagenet_val is not None:
     #     data["imagenet-val"] = get_imagenet(args, preprocess_fns, "val")

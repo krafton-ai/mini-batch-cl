@@ -58,7 +58,13 @@ def get_parser(description='Mini-Batch Contrastive Loss Pre-Training'):
     model_names = torchvision_model_names
 
     parser = argparse.ArgumentParser(description=description, conflict_handler='resolve')
-    parser.add_argument('--data', metavar='DIR', default='/data/cifar100/',
+    # parser.add_argument('--data', metavar='DIR', default='/data/cifar100/',
+    #                     help='path to dataset')
+    parser.add_argument('--train_data', metavar='DIR', default='/data/cifar100/',
+                        help='path to dataset')
+    parser.add_argument('--val_data', metavar='DIR', default='/data/cifar100/',
+                        help='path to dataset')
+    parser.add_argument('--val_on_train_data', metavar='DIR', default='/data/cifar100/',
                         help='path to dataset')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                         choices=model_names,
@@ -272,7 +278,7 @@ def main_worker(gpu, ngpus_per_node, args):
             batch_sampling_tag += f"_ssr{args.search_subset_ratio}"
         else:
             batch_sampling_tag += f"_k{args.k}_q{args.q}"
-    group_tag = '230815_%s_%s_bz_%s_accum%s_E%s_lr_%.7f_%s_%s_%s_%s'\
+    group_tag = '%s_%s_bz_%s_accum%s_E%s_lr_%.1e_%s_%s_%s_%s'\
         %(args.data_name, args.arch, args.batch_size, args.accum_steps, args.epochs, args.lr, args.learning_rate_scaling, args.optimizer, objective_tag, batch_sampling_tag)
     if args.max_dataset_size:
         group_tag += f"_mds{args.max_dataset_size}"
@@ -282,7 +288,6 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.rank == 0:
         if wandb:
             print("init wandb logging...")
-            
             wandb.init(
                 entity="mini_batch_CL",
                 project="pretraining",
@@ -331,6 +336,10 @@ def main_worker(gpu, ngpus_per_node, args):
         default_params = get_default_params(open_clip_dict['model'])
         open_clip_dict.update(default_params)
         open_clip_args = AttrDict(open_clip_dict)
+
+        open_clip_args.train_data = args.train_data
+        open_clip_args.val_data = args.val_data
+        open_clip_args.val_on_train_data = args.val_on_train_data
 
         model = sogclr.builder.SimCLR_CLIP(args, open_clip_args, N=data_size)
 
@@ -519,8 +528,10 @@ def main_worker(gpu, ngpus_per_node, args):
             data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=start_epoch)
         else:
             data = get_data(open_clip_args, (model.preprocess_train, model.preprocess_val), epoch=start_epoch)
+        # train dataset / valid dataset (5,000) / val_on_train dataset (5,000) (same # of valid dataset)
         train_dataset = data['train'].dataset
-        print(f"len(train_dataset) : {len(train_dataset)}")
+        valid_dataset = data['val'].dataset
+        val_on_train_dataset = data['val_on_train'].dataset
 
     print('batch_sampling: {}'.format(batch_sampling_tag))
     assert args.feature_batch_size % (args.batch_size) == 0, "Due to drop_last=True."
@@ -546,6 +557,14 @@ def main_worker(gpu, ngpus_per_node, args):
             train_dataset, batch_size=args.feature_batch_size, shuffle=feature_sampler is None,
             num_workers=args.workers, pin_memory=True, sampler=feature_sampler, drop_last=True)
 
+    # define val data loader
+    val_feature_loader = torch.utils.data.DataLoader(
+            valid_dataset, batch_size=args.feature_batch_size, shuffle=True,
+            num_workers=args.workers, pin_memory=True, sampler=None, drop_last=True)
+
+    val_on_train_feature_loader = torch.utils.data.DataLoader(
+            val_on_train_dataset, batch_size=args.feature_batch_size, shuffle=True,
+            num_workers=args.workers, pin_memory=True, sampler=None, drop_last=True)
 
     def _get_average_meters(iters_per_epoch, epoch):
         batch_time = AverageMeter('Time', ':6.3f')
@@ -563,11 +582,16 @@ def main_worker(gpu, ngpus_per_node, args):
     step = iters_per_epoch * epoch
     avg_meters = _get_average_meters(iters_per_epoch, epoch)
     # print(f"iters_per_epoch {iters_per_epoch}, len(preemptive_loader): {len(preemptive_loader)}")
+
+    u2v_max_val = 0
+    v2u_max_val = 0
+    ready_to_eval = False
     while epoch <= args.epochs:
 
         # train for one epoch
         start_time = time.time()
-        step = train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, scaler, summary_writer, epoch, step, avg_meters, args)
+        rel_save_dir = os.path.join(save_root_path, group_tag)
+        step = train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, scaler, summary_writer, epoch, step, avg_meters, args, rel_save_dir)
         print('elapsed time (s): %.1f'%(time.time() - start_time))
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
@@ -583,11 +607,47 @@ def main_worker(gpu, ngpus_per_node, args):
                     'scaler': scaler.state_dict(),
                     'u': model.module.u, 
                 }, is_best=False, filename=os.path.join(save_root_path, group_tag, 'checkpoint_%04d.pth.tar' % epoch) )
+
         if step % iters_per_epoch == 0:
+            ready_to_eval = True
             epoch += 1
             avg_meters = _get_average_meters(iters_per_epoch, epoch)
             if args.distributed:
                 sampler.set_epoch(epoch)
+
+        if ready_to_eval:
+            # from evaluation import get_top1_accuracy
+            val_value = get_top1_accuracy(epoch, args, model, val_feature_loader)
+            u2v_max_val = max(val_value[0], u2v_max_val)
+            v2u_max_val = max(val_value[1], v2u_max_val)
+            if args.rank == 0:
+                val_logs = {
+                    'val/u2v': val_value[0],
+                    'val/v2u': val_value[1], 
+                    'val/max_u2v': u2v_max_val,
+                    'val/max_v2u': v2u_max_val,
+                    'val/epoch': epoch
+                }
+                for name, val in val_logs.items():
+                    summary_writer.add_scalar(name, val, step)
+
+            with open(os.path.join(save_root_path, group_tag, 'valid.txt'), 'a') as f:
+                f.write(f'[epoch {epoch}] u2v: {val_value[0]}, v2u: {val_value[1]}\n')
+                f.write(f'[epoch {epoch}] u2v_max: {u2v_max_val}, v2u_max: {v2u_max_val}\n')
+                f.write('\n')
+
+            val_on_train_value = get_top1_accuracy(epoch, args, model, val_on_train_feature_loader)
+            if args.rank == 0:
+                val_on_train_logs = {
+                    'val_on_train/u2v': val_on_train_value[0],
+                    'val_on_train/v2u': val_on_train_value[1], 
+                    'val_on_train/epoch': epoch
+                }
+                for name, val in val_on_train_logs.items():
+                    summary_writer.add_scalar(name, val, step)
+            print(f"val epoch : {epoch} / val_logs : {val_logs} / val_on_train_logs : {val_on_train_logs}")
+            ready_to_eval = False
+
 
     if args.rank == 0:
         summary_writer.close()
@@ -595,7 +655,7 @@ def main_worker(gpu, ngpus_per_node, args):
             wandb.finish()
 
 
-def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, scaler, summary_writer, epoch, step, avg_meters, args):
+def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, scaler, summary_writer, epoch, step, avg_meters, args, rel_save_dir):
     batch_time, data_time, learning_rates, losses, progress = avg_meters
 
     # switch to train mode
@@ -613,9 +673,15 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
     lr = adjust_learning_rate(optimizer, step / iters_per_epoch, args)
     learning_rates.update(lr)
     optimizer.zero_grad()
+    
+    with open(os.path.join(rel_save_dir, f"sample_batch.txt"), 'w') as f:
+        for i, (images, image_path, index) in enumerate(train_loader):
+            f.write(f'[{i}]\n')
+            f.write('\n'.join([path for path in image_path]))
+            f.write('\n\n')
 
     for i, (images, _, index) in enumerate(train_loader):
-        
+      
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -658,7 +724,7 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
             if step % args.print_freq == 0:
                 # print(f"step : {step}, iters_per_epoch * epoch: {iters_per_epoch * epoch}, step - iters_per_epoch * epoch : {step - iters_per_epoch * epoch}")
                 progress.display(step - iters_per_epoch * epoch)
-                print(f"update! at i={i + 1}")
+                # print(f"update! at i={i + 1}")
 
             if step % iters_per_epoch == 0:
                 break
@@ -672,6 +738,101 @@ def train(iters_per_epoch, preemptive_loader, feature_loader, model, optimizer, 
         end = time.time()
 
     return step
+
+
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    with torch.no_grad():
+        maxk = max(topk)
+        batch_size = target.size(0)
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
+
+
+def get_metrics(args, image_features, text_features, logit_scale, tqdm_desc=False):
+    metrics = {}
+    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
+    logits_per_text = logits_per_image.t().detach().cpu()
+
+    logits = {"image1_to_image2": logits_per_image, "image2_to_image1": logits_per_text}
+    ground_truth = torch.arange(len(text_features)).view(-1, 1)
+
+    iterator = logits.items() if not tqdm_desc else tqdm(logits.items(), desc=f'rank[{args.rank}] | get_metrics')
+    for name, logit in iterator:
+        ranking = torch.argsort(logit, descending=True)
+        preds = torch.where(ranking == ground_truth)[1]
+        preds = preds.detach().cpu().numpy()
+        metrics[f"{name}_mrr"] = _get_mrr(ranking)
+        metrics[f"{name}_mean_rank"] = preds.mean() + 1
+        metrics[f"{name}_median_rank"] = np.floor(np.median(preds)) + 1
+        for k in [1, 5, 10]:
+            metrics[f"{name}_R@{k}"] = np.mean(preds < k)
+
+    return metrics
+
+
+def _get_mrr(indices):
+    mrr = []
+    for ii, inds in enumerate(indices):
+        mrr.append(1 / (inds.tolist().index(ii)+1))
+    return np.mean(mrr)
+
+
+
+def get_top1_accuracy(epoch, args, model, feature_loader, full_batch=True):
+    model.eval()
+
+    if full_batch:
+        # Get all features
+        images_u_all, images_v_all, indices = [], [], []
+        indices, images_u_all, images_v_all = utils.get_learned_features(feature_loader, model, 1, args, full_extraction=True)
+        # assert images_u_all.shape[0] == args.max_dataset_size, f"images_u_all.shape[0], args.max_dataset_size: {images_u_all.shape[0]}, {args.max_dataset_size}" 
+        if images_u_all.shape[0] == args.max_dataset_size:
+            print(f"images_u_all.shape[0], args.max_dataset_size: {images_u_all.shape[0]}, {args.max_dataset_size}" )
+        images_u_all, images_v_all = images_u_all.cuda(), images_v_all.cuda()
+
+        # Calculate true loss
+        metrics = get_metrics(args, images_u_all, images_v_all, logit_scale=1)
+
+    else: 
+        if args.distributed:
+            # should call the set_epoch() method at the beginning of each global_step (for OSGD family)
+            feature_loader.sampler.set_epoch(global_step)
+        image1_to_image2_, image2_to_image1_ = [], []
+        with torch.no_grad():
+            for step, ((x_i, x_j), _, idx) in enumerate(tqdm(feature_loader, desc=f'rank[{args.rank}] | feature extraction')):
+                x_i = x_i.cuda(args.gpu, non_blocking=True)
+                x_j = x_j.cuda(args.gpu, non_blocking=True)
+
+                with torch.cuda.amp.autocast(True):
+                    z_i, z_j = model(x_i, x_j, None, None, args, wo_loss=True)
+                metrics = get_metrics(args, z_i, z_j, logit_scale=1, tqdm_desc=False)
+                image1_to_image2_.append(float(metrics["image1_to_image2_R@1"]))
+                image2_to_image1_.append(float(metrics["image2_to_image1_R@1"]))
+                x_i, x_j, z_i, z_j = x_i.cpu(), x_j.cpu(), z_i.cpu(), z_j.cpu()
+            metrics["image1_to_image2_R@1"] = sum(image1_to_image2_) / len(image1_to_image2_)
+            metrics["image2_to_image1_R@1"] = sum(image2_to_image1_) / len(image2_to_image1_)
+
+    # image1:u, image2:v
+    image1_to_image2_acc = float(metrics["image1_to_image2_R@1"])
+    image2_to_image1_acc = float(metrics["image2_to_image1_R@1"])
+
+    values = (
+        image1_to_image2_acc,
+        image2_to_image1_acc,
+    )       
+
+    return values
+
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):

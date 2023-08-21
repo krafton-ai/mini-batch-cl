@@ -28,7 +28,8 @@ open_clip_dict = {
     # about data
     ##################################
     "train_data": "/data/clap/cooked_data/COCO/Sep14/train_one_caption.csv",
-    "val_data": "/data/clap/cooked_data/COCO/Sep14/val.csv",
+    "val_data": "/data/clap/cooked_data/COCO/Sep14/val_one_caption.csv",
+    "val_on_train_data": "/data/clap/cooked_data/COCO/Sep14/train_one_caption_5000.csv",
     "csv_img_key": "image_path",
     "csv_caption_key": "caption",
     "csv_separator": "|",

@@ -63,10 +63,13 @@ def get_learned_features(feature_loader, model, global_step, args, full_extracti
     a_idx = a_z_i = a_z_j = None
     assert args.world_size > 0
     kb_size = len(feature_loader) * args.feature_batch_size
-    # print(f"[get_learned_features] kb_size: {kb_size}, len(feature_loader): {len(feature_loader)}, args.feature_batch_size: {args.feature_batch_size}")
+    print(f"[get_learned_features] kb_size: {kb_size}, len(feature_loader): {len(feature_loader)}, args.feature_batch_size: {args.feature_batch_size}")
     if args.distributed:
-        # should call the set_epoch() method at the beginning of each global_step (for OSGD family)
-        feature_loader.sampler.set_epoch(global_step)
+        try:
+            # should call the set_epoch() method at the beginning of each global_step (for OSGD family)
+            feature_loader.sampler.set_epoch(global_step)
+        except: # This is temporal code for detouring "sampler's set_epoch"
+            pass
     with torch.no_grad():
         for step, ((x_i, x_j), _, idx) in enumerate(tqdm(feature_loader, desc=f'rank[{args.rank}] | feature extraction')):
             # print("x_i: ", x_i[:3, :5])
@@ -270,7 +273,7 @@ def sc_even_kb_loose(features, batch_selection, k, args, tqdm_desc=True):
     d = u.shape[-1]
     B = args.global_batch_size
     N = (idxs.shape[0]//(k*B))*(k*B)
-    # print(f"[sc_even_kb_loose] idxs.shape {idxs.shape[0]}  B: {B}, N: {N}, k*B: {k*B}")
+    print(f"[sc_even_kb_loose] idxs.shape {idxs.shape[0]}  B: {B}, N: {N}, k: {k}, k*B: {k*B}")
 
     # Reshape stacked features to (-1, batch_size) features
     idxs, u_, v_ = idxs[:N].reshape((N//(k*B), k, B)), u[:N].reshape((N//(k*B), k, B, d)), v[:N].reshape((N//(k*B), k, B, d)) 
