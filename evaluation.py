@@ -159,7 +159,7 @@ def get_args(ckpt_path, epoch, global_args):
     args.epoch = epoch
 
     args.arch = args.resume.split("/")[-2].split("_bz")[0].split("_")[-1]
-    args.pretrained_data_name = args.resume.split("/")[-2].split(f"_{args.arch}")[0]
+    args.pretrained_data_name = args.resume.split("/")[-2].split(f"_{args.arch}")[0].split('_')[1]
     args.data_name = args.resume.split("/")[-2].split(f"_{args.arch}")[0] \
         if global_args.eval_data_name is None else global_args.eval_data_name
     args.lr = args.resume.split('/')[-2].split("lr_")[1].split("_")[0]
@@ -174,6 +174,9 @@ def get_args(ckpt_path, epoch, global_args):
         args.data = "path/to/data"
     elif args.data_name == "cifar100_c":
         args.feature_batch_size = 2000
+        args.data = "path/to/data"
+    elif args.data_name == "mscoco":
+        args.feature_batch_size = 200
         args.data = "path/to/data"
     if global_args.evaluation == "corrupted_top1_accuracy":
         args.feature_batch_size = 1
@@ -210,6 +213,11 @@ def get_args(ckpt_path, epoch, global_args):
                 args.max_dataset_size = 98304
             else:
                 args.max_dataset_size = 8192
+        if 'mscoco' in args.data_name:
+            if global_args.data_pathname == "train":
+                args.max_dataset_size = 118287
+            else:
+                args.max_dataset_size = 5000
         else:
             raise ValueError()
     else:
@@ -225,33 +233,38 @@ def get_args(ckpt_path, epoch, global_args):
         args.data_size = 129395+1
     elif args.data_name == "cifar100_c":
         args.data_size = 50000+1
+    elif args.data_name == "mscoco":
+        args.data_size = 118287 + 1
     else:
         args.data_size = 1000000
 
     return args
 
 
-def create_model(epoch, args, global_args):
+def create_model(epoch, args, global_args, open_clip_args):
     print("=> creating model '{}'".format(args.arch))
     
-    if global_args.evaluation == "linear_evaluation":
-        print("=> creating linear model '{}'".format(args.arch))
-        if args.arch.startswith('vit'):
-            model = sogclr.vits.__dict__[args.arch]()
-            linear_keyword = 'head'
+    if not global_args.bimodal:
+        if global_args.evaluation == "linear_evaluation":
+            print("=> creating linear model '{}'".format(args.arch))
+            if args.arch.startswith('vit'):
+                model = sogclr.vits.__dict__[args.arch]()
+                linear_keyword = 'head'
+            else:
+                model = torchvision_models.__dict__[args.arch]()
+                linear_keyword = 'fc'
+            # remove original fc and add fc with customized num_classes
+            hidden_dim = model.fc.weight.shape[1]
+            del model.fc  # remove original fc layer
+            model.fc = nn.Linear(hidden_dim, args.num_classes, bias=True)
+            # print (model)
         else:
-            model = torchvision_models.__dict__[args.arch]()
-            linear_keyword = 'fc'
-        # remove original fc and add fc with customized num_classes
-        hidden_dim = model.fc.weight.shape[1]
-        del model.fc  # remove original fc layer
-        model.fc = nn.Linear(hidden_dim, args.num_classes, bias=True)
-        # print (model)
+            model = sogclr.builder.SimCLR_ResNet(
+                partial(torchvision_models.__dict__[args.arch], zero_init_residual=True), 
+                args.dim, args.mlp_dim, args.t, loss_type=args.loss_type, N=args.data_size, num_proj_layers=args.num_proj_layers)      
     else:
-        model = sogclr.builder.SimCLR_ResNet(
-            partial(torchvision_models.__dict__[args.arch], zero_init_residual=True), 
-            args.dim, args.mlp_dim, args.t, loss_type=args.loss_type, N=args.data_size, num_proj_layers=args.num_proj_layers)      
-    
+        model = sogclr.builder.SimCLR_CLIP(args, open_clip_args, N=args.data_size)
+
     torch.cuda.set_device(args.gpu)
     model = model.cuda(args.gpu)
 
@@ -365,6 +378,7 @@ def get_top1_accuracy(epoch, args, model, feature_loader, full_batch=True):
     image2_to_image1_acc = float(metrics["image2_to_image1_R@1"])
 
     msg = "[{}, {}, epoch={}, N={}, k={}, q={}] u2v={:.4f}, v2u={:.4f}".format(args.data_name, args.pretrained_batch_sampling, args.epoch, args.max_dataset_size, args.k, args.q, image1_to_image2_acc, image2_to_image1_acc)
+    print(f"msg : {msg}")
 
     # multiple results
     bs_names = (
@@ -375,7 +389,7 @@ def get_top1_accuracy(epoch, args, model, feature_loader, full_batch=True):
         image1_to_image2_acc,
         image2_to_image1_acc,
     )
-        
+
 
     return args.max_dataset_size, bs_names, values, msg
 
@@ -383,9 +397,36 @@ def get_top1_accuracy(epoch, args, model, feature_loader, full_batch=True):
 def evaluation(ckpt_path, epoch, global_args):
     args = get_args(ckpt_path, epoch, global_args)
 
-    model = create_model(epoch, args, global_args)
+    if global_args.bimodal:
+        from attrdict import AttrDict
+        # [Reference] https://git.projectbro.com/deep-learning/project-clap/open_clip/-/blob/dev_clif_wandb_exp/src/scripts/clif/221124/run_exp1_80000_2-modal_unfrozen_lr1e8.sh
+        from open_clip_config import open_clip_dict
+        def get_default_params(model_name):
+            # Params from paper (https://arxiv.org/pdf/2103.00020.pdf)
+            model_name = model_name.lower()
+            if "vit" in model_name:
+                return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.98, "eps": 1.0e-6}
+            else:
+                return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.999, "eps": 1.0e-8}
+        default_params = get_default_params(open_clip_dict['model'])
+        open_clip_dict.update(default_params)
+        open_clip_args = AttrDict(open_clip_dict)
 
-    train_dataset = get_train_dataset(args, global_args)
+        open_clip_args.batch_size = args.feature_batch_size
+        open_clip_args.workers = args.workers
+
+    model = create_model(epoch, args, global_args, open_clip_args)
+
+    if not global_args.bimodal:
+        train_dataset = get_train_dataset(args, global_args)
+    else:
+        from oc_data import get_data
+        if hasattr(model, 'module'):
+            data = get_data(open_clip_args, (model.module.preprocess_train, model.module.preprocess_val), epoch=-1)
+        else:
+            data = get_data(open_clip_args, (model.preprocess_train, model.preprocess_val), epoch=-1)
+
+        train_dataset = data['val'].dataset
 
     feature_loader = torch.utils.data.DataLoader(
             train_dataset, batch_size=args.feature_batch_size, shuffle=True,
@@ -437,7 +478,9 @@ def main(global_args):
 if __name__ == "__main__":
     parser = get_parser(description='Evaluation')
     parser.add_argument('--ckpt_key', default='cifar100', type=str,
-                    choices=["cifar100_bz32_sim_all", "cifar100_bz32_sog_all", "tiny_imagenet_bz32_sim_all", "tiny_imagenet_bz32_sog_all"])
+                    choices=["cifar100_bz32_sim_all", "cifar100_bz32_sog_all",
+                     "tiny_imagenet_bz32_sim_all", "tiny_imagenet_bz32_sog_all",
+                     "mscoco_bz32_sim_all"])
     parser.add_argument("--epoch_list", nargs='+', type=int, default=[])
     parser.add_argument('--save_dir', metavar='DIR', default='logs/evaluation',
                     help='path to saved results')
@@ -446,6 +489,7 @@ if __name__ == "__main__":
                         choices=["top1_accuracy", "corrupted_top1_accuracy"])
     parser.add_argument('--eval_data_name', default=None, type=str)
     parser.add_argument('--data_pathname', default='train', type=str)
+    parser.add_argument('--bimodal', action="store_true", default='whether the model is bimodal')
     global_args = parser.parse_args()
 
     global_args.ckpt_paths = {
@@ -473,6 +517,28 @@ if __name__ == "__main__":
             f"logs/tiny_imagenet_resnet18_bz_32_accum1_E100_lr_0.075_sqrt_lars_obj_sog_s/checkpoint_{epoch:04d}.pth.tar",
             f"logs/tiny_imagenet_resnet18_bz_32_accum1_E100_lr_0.075_sqrt_lars_obj_sog_sc_even_kb_loose_max_k40_q40/checkpoint_{epoch:04d}.pth.tar",
         ],
+        "mscoco_bz32_sim_all": lambda epoch: [
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000030_sqrt_lars_obj_sim_s/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000030_sqrt_lars_obj_sim_osgd_kb_loose_max_k1500_q150/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000030_sqrt_lars_obj_sim_sc_even_kb_loose_max_k10_q10/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000030_sqrt_lars_obj_sim_sc_even_kb_loose_max_k20_q20/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000030_sqrt_lars_obj_sim_sc_even_kb_loose_max_k40_q40/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000100_sqrt_lars_obj_sim_s/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000100_sqrt_lars_obj_sim_osgd_kb_loose_max_k1500_q150/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000100_sqrt_lars_obj_sim_sc_even_kb_loose_max_k10_q10/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000100_sqrt_lars_obj_sim_sc_even_kb_loose_max_k20_q20/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000100_sqrt_lars_obj_sim_sc_even_kb_loose_max_k40_q40/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000300_sqrt_lars_obj_sim_s/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000300_sqrt_lars_obj_sim_osgd_kb_loose_max_k1500_q150/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000300_sqrt_lars_obj_sim_sc_even_kb_loose_max_k10_q10/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000300_sqrt_lars_obj_sim_sc_even_kb_loose_max_k20_q20/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0000300_sqrt_lars_obj_sim_sc_even_kb_loose_max_k40_q40/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0001000_sqrt_lars_obj_sim_s/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0001000_sqrt_lars_obj_sim_osgd_kb_loose_max_k1500_q150/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0001000_sqrt_lars_obj_sim_sc_even_kb_loose_max_k10_q10/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0001000_sqrt_lars_obj_sim_sc_even_kb_loose_max_k20_q20/checkpoint_{epoch:04d}.pth.tar",
+            f"logs/230815_mscoco_resnet18_bz_32_accum1_E100_lr_0.0001000_sqrt_lars_obj_sim_sc_even_kb_loose_max_k40_q40/checkpoint_{epoch:04d}.pth.tar"
+        ] 
     }[global_args.ckpt_key]
 
     if global_args.evaluation == "corrupted_top1_accuracy":
