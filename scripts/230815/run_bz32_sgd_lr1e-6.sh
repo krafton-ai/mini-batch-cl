@@ -1,0 +1,2 @@
+PYTHONPATH=../../ CUDA_VISIBLE_DEVICES=0 python train.py     --lr=1e-6 --epochs=30 --batch-size=32 --feature-batch-size=2496     --warmup-epochs 3     --arch resnet18     --learning-rate-scaling=sqrt     --gamma 0.9     --multiprocessing-distributed --world-size 1 --rank 0 --workers 16     --crop-min=.08     --wd=0.1     --dist-url 'tcp://localhost:10000'     --data_name mscoco     --data '/data/clap/cooked_data/COCO/Sep14/train_one_caption.csv'     --save_dir ./logs/     --objective_type sim     --batch_sampling s     --print-freq 1     --save-freq 3     --bimodal
+  
